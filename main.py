@@ -1,58 +1,74 @@
-# Benefits of FastAPI:
-# 1) it is just plain python (easy to understand as syntax is just plain python)
-# 2) built in async (asynchronous programming)
-# 3) built in data validation -> Pydantic models; i.e. To declare a request body, you use Pydantic models with all their power and benefits.
-# 4) typed python! -> for (request bodies and more??)
-# 5) errors are in json
-# 6) built in authentication - HTTP Basic OAuth2 tokens (JWT tokens) and header API keys.
-# 7) swagger ui built in; if you go to the /docs route you get documentation!!! :) (demo API to stakeholders easily!) ; the /redoc route does the same w/ a diff UI/
+import random
+import uuid
+from datetime import timedelta
 
-from fastapi import FastAPI
-from models import ToDo
+from fastapi import Depends
+from fastapi import FastAPI, Form
+from fastapi import Request, Response
+from fastapi.responses import HTMLResponse
+
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+
+from database import Base
+from database import SessionLocal
+from database import engine
+from models import create_todo
+from models import delete_todo
+from models import get_todo
+from models import get_todos
+from models import update_todo
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+templates = Jinja2Templates(directory="templates")
 
 
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-todos = []
 
-# Get all todos
-@app.get("/todos")
-async def get_todos():
-    return {"todos": todos}
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request, db: Session = Depends(get_db)):
+    session_key = request.cookies.get("session_key", uuid.uuid4().hex)
+    todos = get_todos(db, session_key)
+    context = {
+        "request": request,
+        "todos": todos,
+        "title": "Home"
+    }
+    response = templates.TemplateResponse("home.html", context)
+    response.set_cookie(key="session_key", value=session_key, expires=259200)  # 3 days
+    return response
 
-# Get single todo
-@app.get("/todos/{todo_id}")
-async def get_todo(todo_id: int):
-    for todo in todos:
-        if todo.id == todo_id:
-            return {"todo": todo}
-    return {"todos": "No todos found"}
 
-# Create a todo
-@app.post("/todos")
-async def create_todos(todo: ToDo): # fast api is typed; i.e. todo: int or todo: str, will enforce that the todo being passed in the method is of type int or str.
-    todos.append(todo)
-    return {"todos": "Todo has been added"}
+@app.post("/add", response_class=HTMLResponse)
+def post_add(request: Request, content: str = Form(...), db: Session = Depends(get_db)):
+    session_key = request.cookies.get("session_key")
+    todo = create_todo(db, content=content, session_key=session_key)
+    context = {"request": request, "todo": todo}
+    return templates.TemplateResponse("todo/item.html", context)
 
-# Update a todo
-@app.put("/todos/{todo_id}")
-async def update_todos(todo_id: int, todo_obj: ToDo):
-    for todo in todos:
-        if todo.id == todo_id:
-            todo.id = todo_id
-            todo.item = todo_obj.item
-            return {"todo": todo}
-    return {"todos": "No todos found to update"}
 
-# Delete a todo
-@app.delete("/todos/{todo_id}")
-async def delete_todo(todo_id: int):
-    for todo in todos:
-        if todo.id == todo_id:
-            todos.remove(todo)
-            return {"message":"todo has been DELETED!"}
-    return {"todos": "No todos found"}
+@app.get("/edit/{item_id}", response_class=HTMLResponse)
+def get_edit(request: Request, item_id: int, db: Session = Depends(get_db)):
+    todo = get_todo(db, item_id)
+    context = {"request": request, "todo": todo}
+    return templates.TemplateResponse("todo/form.html", context)
+
+
+@app.put("/edit/{item_id}", response_class=HTMLResponse)
+def put_edit(request: Request, item_id: int, content: str = Form(...), db: Session = Depends(get_db)):
+    todo = update_todo(db, item_id, content)
+    context = {"request": request, "todo": todo}
+    return templates.TemplateResponse("todo/item.html", context)
+
+
+@app.delete("/delete/{item_id}", response_class=Response)
+def delete(item_id: int, db: Session = Depends(get_db)):
+    delete_todo(db, item_id)
